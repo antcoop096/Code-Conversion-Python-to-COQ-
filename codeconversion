@@ -1,0 +1,360 @@
+def indentations(line : str): #gets indentations as stings
+    index = 0
+    while line[index] == ' ':
+        index += 1
+    return line[:index]
+
+
+def get_data(line): #returns either conditional statement or return value
+    data = line.replace(' ', '')
+    data = data.replace('(', '')
+    data = data.replace(')', '')
+
+    if ('if' in data) or ('elif' in data):
+        start_idx = data.index('f') + 1
+        end_idx = data.index(':')
+        data = data[start_idx : end_idx] 
+
+        if '==' in data:
+            data = tuple(data.split('=='))
+        else:
+            data = (data, 'True')
+
+    elif 'return' in data:
+        start_idx = data.index('n') + 1
+        data = data[start_idx :]
+    
+    return data
+
+
+def convert_data(data): #converts data from py to coq
+    if data.isdecimal():
+        data = f"{'S(' * int(data)}O{')' * int(data)}" 
+
+    elif data == 'True' or data == 'False':
+        data = data.lower()
+    
+    elif ('<' in data) or ('>' in data) or ('!=' in data):
+        curr_op = ''
+        for op in comp_ops:
+            if op in data:
+                curr_op = op
+                break
+
+        op_idx = data.index(curr_op)        
+        left = data[:op_idx]
+        right = data[op_idx + len(curr_op):]
+        
+        if left.isdecimal(): 
+            left = f"{'S(' * int(left)}O{')' * int(left)}" 
+        if right.isdecimal():
+            right = f"{'S(' * int(right)}O{')' * int(right)}" 
+        
+        data = f"{left} {comp_ops[curr_op]} {right}"
+
+    return data
+
+
+def get_return_type(line_list, param_list, info): #gets return type for whole program
+    return_type = ''
+    for line in line_list:
+            if 'return' in line:
+                for bool in ['True', 'False', '==', '<', '<=', '>', '>=']:
+                    if bool in line:
+                        return_type = 'bool'
+                        break
+
+                if return_type == 'bool':
+                    break
+                
+                for number in range(10):
+                    if str(number) in line:
+                        return_type = 'nat'
+                        break
+                
+                if return_type == 'nat':
+                    break
+
+                for param in param_list: #if variable is returned gets return type of variable
+                    param = param.replace(' ','')
+                    colon_idx = param.index(':')
+                    var = param[:colon_idx]
+                    info['return_var'] = var
+                    if var in line:
+                        return_type = param[colon_idx + 1:]
+                        break
+                break
+
+    return return_type
+
+
+def list_cond_set_up(line_split, curr_ind):
+    code_add = ''
+    list_vars = [] #it means that lists/containers are used in line
+    for part in line_split: #adds list variables in line (with []) in list_vars
+        if '[' in part:
+            brckt_idx = part.index('[')
+            list_vars.append(part[:brckt_idx])
+    code_add += f"match {', '.join(list_vars)} with\n"
+    list_var_comp = [f" {var} :: {var}'" for var in list_vars] #part that captures current element
+    code_add += f"{curr_ind}|{','.join(list_var_comp)} =>\n"       #and rest of list after that
+    return code_add
+
+
+def conv_cond_body(index, idx_add, line_list, info): #converts conditon body (with return in it) into coq
+    code_add = ''
+    while index + idx_add < len(line_list) and indentations(line_list[index + idx_add]) == indentations(line_list[index + 1]): 
+        line = line_list[index + idx_add] #while we havent reached the end of the list and we are within the body
+
+        if "return" in line: #if return is at the current line
+            ret_val = get_data(line) #capture the value and add it to code 
+            ret_val = convert_data(ret_val)                     
+            code_add += ret_val + '\n'
+            break
+
+        elif "+=" in line: #if += is a the current line
+            line = line.replace(' ', '')
+            plus_idx = line.index('+=') 
+            add_var = line[:plus_idx] #captures variable and integer value added
+            add_val = convert_data(line[plus_idx + 2:])
+            code_add += info['func_call']['name'] 
+            param_list = info['func_call']['params']
+
+            for param in param_list: #writes recursive function call with count+=1
+                colon_idx = param.index(':')
+                param = param[:colon_idx]
+                param = param.replace(' ','')
+
+                if param == info['loop_var']:
+                    param = f"{param} + S(O)"
+                elif param == add_var:
+                    param = f"{param} + {add_val}"
+                else:
+                    param = f"{param}'"
+                code_add += f" ({param})"
+
+        idx_add += 1
+    
+    return code_add
+    
+
+comp_ops = {
+  '!=': '!=?',
+  '<=': '<=?',
+  '>=': '>=?',
+  '<' : '<?',
+  '>' : '>?'
+}
+
+
+initial_info = {
+    'in_for' : False,
+    'prev_comp_op' : False,
+    'end_count' : 0,
+    'return_var' : '',
+    'extra_ind' : '',
+    'loop_var' : '',
+    'var_list' : [],
+    'func_call' : {
+        'name' : '',
+        'params' : []
+    }
+}
+
+def py_to_coq(line_list, info = initial_info):
+    code = ""
+    index = 0 
+
+    while index < len(line_list): #while we havent passed the last line
+        line = line_list[index]  #get current line and indentations
+
+        if ' = ' in line: #if the line is an assignment
+            index += 1    #continue to next line
+            continue
+
+        curr_ind = indentations(line) + info['extra_ind'] #does indentations
+        code += curr_ind
+        line_split = line.split()
+
+        if line_split[0] == 'def': #if keyword is def
+            open_par_idx = line.index('(') #capture parameters and function name
+            close_par_idx = line.index(')')
+            param_list = line[open_par_idx + 1: close_par_idx].split(',') 
+            function_name = line_split[1][:line_split[1].index('(')]
+            info['func_call']['name'] = function_name
+            iters = 0 
+            keyword = 'Definition' 
+
+            for line in line_list: #looks for 'for' keyword
+                if 'for ' in line: 
+                    keyword = 'Fixpoint' #and changes it to the keyword if found
+                    if 'range(' in line: #detects for range function
+                        ran_idx = line.index('range(')
+                        idx_var = line.split()[1]
+                        info['loop_var'] = idx_var
+                        param_list.append(f"{idx_var} : nat") #adds current iteration to parameters
+                        iters = line[ran_idx + 6] #captures how many iterations will occur
+                        iters = convert_data(iters)
+                    for line in line_list:
+                        if ' = ' in line: #adds any assigned variables to parameters
+                            line = line.replace(' ', '')
+                            eq_idx = line.index('=')
+                            var = line[:eq_idx]
+                            val = line[eq_idx + 1:]
+                            val_type = ''
+                            if val.isdecimal():
+                                val_type = 'nat'
+                            param_list.append(f"{var} : {val_type}")
+  
+                    break
+            
+            code += f"{keyword} {function_name}" #add function declaration to code
+            for param in param_list:
+                if 'int' in param:
+                    param = param.replace('int', 'nat')
+                info['func_call']['params'].append(param)
+                info['var_list'].append(param)
+                code += f" ({param}) "
+
+            return_type = get_return_type(line_list, param_list, info) #captures return type
+            code += f": {return_type} :="  #and adds it to code
+
+        elif line_split[0] == "if": 
+
+            if '[' in ' '.join(line_split): #if [] for indexes are in the line
+                list_vars = [] #it means that lists/containers are used in line
+                for part in line_split: #adds list variables in line (with []) in list_vars
+                    if '[' in part:
+                        brckt_idx = part.index('[')
+                        list_vars.append(part[:brckt_idx])
+                code += f"match {', '.join(list_vars)} with\n"
+                list_var_comp = [f" {var} :: {var}'" for var in list_vars] #part that captures current element
+                code += f"{curr_ind}|{','.join(list_var_comp)} =>\n"       #and rest of list after that
+                
+                new_if = [] #gets rid of the [] in in statement
+                for part in line_split:
+                    if '[' in part:
+                        open_idx = part.index('[')
+                        close_idx = part.index(']')
+                        new_if.append(part[:open_idx] + part[close_idx + 1:])
+                    else:
+                        new_if.append(part)
+                new_if = [curr_ind + ' '.join(new_if)]
+
+                info['extra_ind'] += '    '
+                code += py_to_coq(new_if + line_list[1:], info)[:-1] #handles the actual condition now, and body
+                undr_scre_list = ['_' for list_var in list_var_comp]      #handles "_" part of 
+                code += f"\n{curr_ind}| {', '.join(undr_scre_list)} => "  #part that captures curr element and rest 
+                code += info['return_var']
+                code += f"\n{curr_ind}end\n" 
+                break
+
+            data = get_data(line) #captures conditional statement             
+
+            match_expr = convert_data(data[0])
+            if ('<' in match_expr) or ('>' in match_expr) or ('!=' in match_expr): #special set-up for comp ops
+                info['prev_comp_op'] = True
+            code += f"match {match_expr} with\n" #creates match declaration
+    
+            comparison = convert_data(data[1]) #creates a match for a conditional body
+            code += f"{curr_ind}| {comparison} => " #POSSIBLE ERROR
+            code += conv_cond_body(index, 1, line_list, info)
+            
+            idx_add = 0 
+            ind_add = ''
+            while index + idx_add < len(line_list): #everything here handles the subsequent conditions
+                sub_line = line_list[index + idx_add]
+
+                if (len(indentations(sub_line)) < len(curr_ind)) and (info['in_for']):
+                    break
+
+            
+                if indentations(sub_line) == curr_ind:
+                    #indents = indentations(line_list[index])
+
+                    if "return" in sub_line: #handles match for return statement
+                        ret_val = get_data(sub_line)
+                        ret_val = convert_data(ret_val) 
+                        code += f"{curr_ind + ind_add}| _ => {ret_val}\n"  
+                    
+                    elif "elif" in sub_line: #handles match for elif branch
+                        condition = get_data(sub_line) 
+                        if ('<' in condition[0]) or ('>' in condition[0]): #handles elif with comp op
+                            info['prev_comp_op'] = True                            #creates new match
+                            info['end_count'] += 1
+                            match_expr = convert_data(condition[0])
+                            code += f"{curr_ind + ind_add}| _ =>\n"
+                            ind_add += '    '
+                            code += f"{curr_ind + ind_add}match {match_expr} with\n"
+                            code += f"{curr_ind + ind_add}| true => "
+                        else: #handles elif with just ==
+                            if info['prev_comp_op']: #handles if previous match used a comp op
+                                info['prev_comp_op'] = False
+                                info['end_count'] += 1
+                                code += f"{curr_ind + ind_add}| _ =>\n"
+                                ind_add += '    '
+                                data = get_data(sub_line)
+                                match_expr = convert_data(data[0])
+                                code += f"{curr_ind + ind_add}match {match_expr} with\n" 
+                            
+                            comparison = convert_data(condition[1]) #
+                            code += f"{curr_ind + ind_add}| {comparison} => "
+
+                        code += conv_cond_body(index, idx_add + 1, line_list, info) #handles body of elif with return statement in it
+                    
+                    elif "else" in sub_line: #handles body of else with return statement in it
+                        code += f"{curr_ind + ind_add}| _ => "         
+                        code += conv_cond_body(index, idx_add + 1, line_list, info)                    
+
+                idx_add += 1 #goes down a line
+
+            if info['in_for']:
+                code += f"\n{curr_ind}| _ => "
+                code += info['func_call']['name']
+                param_list = info['func_call']['params']
+
+                for param in param_list:
+                    param = param.replace(' ','')
+                    colon_idx = param.index(':')
+                    if 'list' in param:
+                        param = f"{param[:colon_idx]}'"
+                    else:
+                        param = param[:colon_idx]
+                        if param == info['loop_var']:
+                            param = f"{param} + S(O)"
+                    code += f" ({param})"    
+                code += f"\n{curr_ind}end "
+                break
+
+            for num in range(info['end_count'], 0, -1): #takes care of end keywords
+                code += f"    {'    ' * num}end\n"
+
+            code += f"{curr_ind}end"
+            index += idx_add #goes right underneath all connected conditional branches
+
+        elif line_split[0] == "for": #if keyword is for
+            info['in_for'] = True #sets up for loops
+            code += f"match {idx_var} <? {iters} with\n" 
+            code += f"{curr_ind}| true =>\n"
+            code += py_to_coq(line_list[index + 1:], info)[:-1] #handles body of loop
+            info['in_for'] = False
+            code += f"\n{curr_ind}| _ => {info['return_var']}" #handles return after loop
+            code += f"\n{curr_ind}end "
+            break
+
+        code += '\n'
+        index += 1
+
+    code = code[:-1] + '.'
+    return code
+
+
+line_list = [
+            "def test(n : nat):              ",
+            "    if n < 5:                         ",
+            "       return True                         ",          
+            "    else:                         ",
+            "       return False                         ",     
+        ]
+final_code = py_to_coq(line_list)
+print(final_code)
